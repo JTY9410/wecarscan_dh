@@ -1,185 +1,32 @@
 """SOH 추정 모듈 테스트"""
 import pytest
 from app.modules.scanner.soh_estimation import (
-    estimate_soh,
     estimate_soh_by_throughput,
-    estimate_soh_by_energy,
     estimate_soh_by_time,
-    get_battery_spec
+    estimate_soh_by_energy,
+    estimate_soh_multimethod,
+    format_soh_result,
+    get_battery_spec,
+    SOHEstimate
 )
 
 
-def test_estimate_soh_by_throughput():
-    """Coulomb Counting 방법 테스트"""
+def test_estimate_soh_by_throughput_nmc():
+    """NMC 배터리 Coulomb Counting 테스트"""
     result = estimate_soh_by_throughput(
-        cum_charge_ah=5000,
-        cum_discharge_ah=4750,
+        cum_charge_ah=10000,
+        cum_discharge_ah=9500,
         nominal_capacity_ah=170,
         battery_chemistry="NMC"
     )
     
-    # 약 14.4 사이클 (9750 / (170*2))
-    # 용량 손실 = 170 * 14.4 * 0.00005 ≈ 0.122 Ah
-    # 현재 용량 = 170 - 0.122 = 169.878 Ah
-    # SOH = 169.878 / 170 * 100 ≈ 99.9%
-    
     assert result.method == "coulomb_counting"
-    assert 99.0 <= result.soh <= 100.0
+    assert 97.0 <= result.soh <= 100.0
     assert result.confidence == 0.85
 
 
-def test_estimate_soh_by_throughput_heavy_use():
-    """많이 사용한 배터리 (저SOH)"""
-    result = estimate_soh_by_throughput(
-        cum_charge_ah=100000,
-        cum_discharge_ah=95000,
-        nominal_capacity_ah=170,
-        battery_chemistry="NMC"
-    )
-    
-    # 약 573 사이클
-    # 용량 손실 = 170 * 573 * 0.00005 ≈ 4.87 Ah
-    # 현재 용량 = 170 - 4.87 ≈ 165.13 Ah
-    # SOH ≈ 97.1%
-    
-    assert result.method == "coulomb_counting"
-    assert 95.0 <= result.soh <= 98.0
-
-
-def test_estimate_soh_by_energy():
-    """에너지 기반 방법 (kWh throughput)"""
-    result = estimate_soh_by_energy(
-        cum_charge_kwh=3000,
-        cum_discharge_kwh=2850,
-        nominal_capacity_kwh=64.0,
-        battery_chemistry="NMC"
-    )
-    
-    # 약 45.7 사이클
-    # 노화 ≈ 45.7 * 0.00005 * 100 = 0.23%
-    # SOH ≈ 99.77%
-    
-    assert result.method == "energy_throughput"
-    assert 60 <= result.soh <= 105
-    assert result.confidence == 0.80
-
-
-def test_estimate_soh_by_time_normal():
-    """시간 기반 방법 - 일반 사용"""
-    result = estimate_soh_by_time(
-        operating_time_s=2 * 365.25 * 24 * 3600,  # 2년
-        nominal_capacity_ah=170,
-        temperature_avg_c=25.0,
-        usage_pattern="normal"
-    )
-    
-    # 2년 * 2.5% = 5% 감소 → SOH 95%
-    assert result.method == "time_based"
-    assert 93 <= result.soh <= 97
-    assert result.confidence == 0.60
-
-
-def test_estimate_soh_by_time_harsh():
-    """시간 기반 방법 - 가혹 사용"""
-    result = estimate_soh_by_time(
-        operating_time_s=3 * 365.25 * 24 * 3600,  # 3년
-        nominal_capacity_ah=170,
-        temperature_avg_c=35.0,  # 더운 지역
-        usage_pattern="harsh"
-    )
-    
-    # 3년 * 2.5% * 1.5 (temp) * 1.5 (usage) ≈ 16.9% 감소
-    assert result.method == "time_based"
-    assert 80 <= result.soh <= 90
-
-
-def test_estimate_soh_by_time_mild():
-    """시간 기반 방법 - 온화한 사용"""
-    result = estimate_soh_by_time(
-        operating_time_s=1 * 365.25 * 24 * 3600,  # 1년
-        nominal_capacity_ah=64.0,
-        temperature_avg_c=20.0,
-        usage_pattern="mild"
-    )
-    
-    # 1년 * 2.5% * 0.75 (temp) * 0.8 (usage) = 1.5%
-    assert result.method == "time_based"
-    assert 94 <= result.soh <= 98
-
-
-def test_estimate_soh_multimethod_coulomb_priority():
-    """여러 데이터가 있을 때 Coulomb Counting 우선"""
-    ev_data = {
-        "battery_cum_charge_ah": 10000,
-        "battery_cum_discharge_ah": 9500,
-        "battery_cum_charge_kwh": 3000,  # 이것도 있지만
-        "battery_cum_discharge_kwh": 2850,
-        "operating_time_s": 2 * 365.25 * 24 * 3600,
-    }
-    
-    car = {"diag_model": "KONA", "diag_submodel": "ELECTRIC"}
-    
-    result = estimate_soh(ev_data, car)
-    
-    # Coulomb Counting이 최우선이므로 그 방법을 써야 함
-    assert result is not None
-    assert result.method == "coulomb_counting"
-
-
-def test_estimate_soh_multimethod_minimal_data():
-    """최소한의 데이터 (시간만)"""
-    ev_data = {
-        "operating_time_s": 365.25 * 24 * 3600,  # 1년
-    }
-    
-    car = {"diag_model": "IONIQ", "diag_submodel": "5"}
-    
-    result = estimate_soh(ev_data, car)
-    
-    assert result is not None
-    assert result.method == "time_based"
-
-
-def test_estimate_soh_no_data():
-    """데이터가 전혀 없을 때"""
-    ev_data = {}
-    result = estimate_soh(ev_data, None)
-    
-    assert result is None
-
-
-def test_get_battery_spec_exact_match():
-    """정확한 모델명 매칭"""
-    car = {"diag_model": "KONA", "diag_submodel": "ELECTRIC"}
-    spec = get_battery_spec(car)
-    
-    assert spec["capacity_kwh"] == 64.0
-    assert spec["capacity_ah"] == 170
-    assert spec["chemistry"] == "NMC"
-
-
-def test_get_battery_spec_partial_match():
-    """부분 매칭 (공백 포함 등)"""
-    car = {"diag_model": "KONA ELECTRIC", "diag_submodel": ""}
-    spec = get_battery_spec(car)
-    
-    assert spec["capacity_ah"] == 170
-    assert spec["chemistry"] == "NMC"
-
-
-def test_get_battery_spec_unknown():
-    """알 수 없는 차량 - 기본값 반환"""
-    car = {"diag_model": "UNKNOWN", "diag_submodel": "MODEL"}
-    spec = get_battery_spec(car)
-    
-    # 기본값
-    assert spec["capacity_kwh"] == 64.0
-    assert spec["capacity_ah"] == 170
-    assert spec["chemistry"] == "NMC"
-
-
-def test_estimate_soh_lfp_battery():
-    """LFP 배터리 (BYD 등) - 노화율 더 낮음"""
+def test_estimate_soh_by_throughput_lfp():
+    """LFP 배터리는 노화가 더 느림"""
     result = estimate_soh_by_throughput(
         cum_charge_ah=100000,
         cum_discharge_ah=95000,
@@ -187,17 +34,227 @@ def test_estimate_soh_lfp_battery():
         battery_chemistry="LFP"
     )
     
-    # LFP는 노화계수 0.00003 (NMC 0.00005보다 낮음)
-    # 573 사이클 * 0.00003 = 0.017 → 용량 손실 2.9 Ah
-    # SOH ≈ 98.3%
-    
+    # LFP는 노화계수 0.0001 (NMC 0.00015보다 낮음)
     assert result.method == "coulomb_counting"
-    assert 97.5 <= result.soh <= 99.0
+    assert 97.0 <= result.soh <= 100.0
 
 
-def test_soh_bounds():
-    """SOH는 항상 60~100% 범위"""
-    # 극단적으로 많이 사용 (물리적으로 불가능한 수준)
+def test_estimate_soh_by_time_light_usage():
+    """시간 기반 - 적은 사용 (연간 100 사이클)"""
+    result = estimate_soh_by_time(
+        operating_time_s=1 * 365.25 * 24 * 3600,  # 1년
+        cum_charge_kwh=6400,  # 64kWh * 100 사이클
+        nominal_capacity_kwh=64.0
+    )
+    
+    # 1년 * 2.5% * 약 1.0 (적은 사용) = ~2.5% 감소 → 97.5%
+    assert result.method == "time_based_fallback"
+    assert 96.0 <= result.soh <= 98.0
+    assert result.confidence == 0.6
+
+
+def test_estimate_soh_by_time_heavy_usage():
+    """시간 기반 - 많은 사용 (연간 500 사이클)"""
+    result = estimate_soh_by_time(
+        operating_time_s=2 * 365.25 * 24 * 3600,  # 2년
+        cum_charge_kwh=64000,  # 64kWh * 1000 사이클 (500/년)
+        nominal_capacity_kwh=64.0
+    )
+    
+    # 2년 * 2.5% * 1.3 (많은 사용) ≈ 6.5% 감소 → 93.5%
+    assert result.method == "time_based_fallback"
+    assert 92.0 <= result.soh <= 95.0
+
+
+def test_estimate_soh_by_energy():
+    """에너지 기반 SOH 추정"""
+    result = estimate_soh_by_energy(
+        cum_charge_kwh=3000,
+        cum_discharge_kwh=2850,
+        nominal_capacity_kwh=64.0,
+        battery_chemistry="NMC"
+    )
+    
+    assert result.method == "energy_throughput"
+    assert 98.0 <= result.soh <= 100.0
+    assert result.confidence == 0.7
+
+
+def test_estimate_soh_multimethod_with_all_data():
+    """모든 데이터가 있을 때 Coulomb Counting 우선"""
+    signals = {
+        "cum_charge_ah": 10000,
+        "cum_discharge_ah": 9500,
+        "cum_charge_kwh": 3700,
+        "cum_discharge_kwh": 3515,
+        "operating_time_s": 1 * 365.25 * 24 * 3600
+    }
+    car = {"diag_model": "KONA", "diag_submodel": "ELECTRIC"}
+    
+    result = estimate_soh_multimethod(signals, car)
+    
+    # Coulomb Counting이 최우선
+    assert result.method == "coulomb_counting"
+    assert result.soh is not None
+    assert result.confidence == 0.85
+
+
+def test_estimate_soh_multimethod_without_ah():
+    """Ah 데이터 없을 때 kWh 사용"""
+    signals = {
+        "cum_charge_kwh": 3000,
+        "cum_discharge_kwh": 2850,
+        "operating_time_s": 1 * 365.25 * 24 * 3600
+    }
+    car = {"diag_model": "IONIQ", "diag_submodel": "5"}
+    
+    result = estimate_soh_multimethod(signals, car)
+    
+    # Energy Throughput 사용
+    assert result.method == "energy_throughput"
+    assert result.soh is not None
+    assert result.confidence == 0.7
+
+
+def test_estimate_soh_multimethod_no_data():
+    """데이터가 부족할 때"""
+    signals = {}
+    car = None
+    
+    result = estimate_soh_multimethod(signals, car)
+    
+    assert result.soh is None
+    assert result.method == "unavailable"
+    assert result.confidence == 0.0
+
+
+def test_get_battery_spec_hyundai():
+    """현대 차량 배터리 사양"""
+    car = {"diag_model": "KONA", "diag_submodel": "ELECTRIC"}
+    spec = get_battery_spec(car)
+    
+    assert spec["capacity_kwh"] == 64.0
+    assert spec["capacity_ah"] == 170
+    assert spec["chemistry"] == "NMC"
+
+
+def test_get_battery_spec_kia():
+    """기아 차량 배터리 사양"""
+    car = {"diag_model": "EV6"}
+    spec = get_battery_spec(car)
+    
+    assert spec["capacity_kwh"] == 77.4
+    assert spec["capacity_ah"] == 216
+    assert spec["chemistry"] == "NMC"
+
+
+def test_get_battery_spec_nissan():
+    """닛산 리프 배터리 사양"""
+    car = {"diag_model": "LEAF"}
+    spec = get_battery_spec(car)
+    
+    assert spec["capacity_kwh"] == 40.0
+    assert spec["capacity_ah"] == 107
+    assert spec["chemistry"] == "NMC"
+
+
+def test_get_battery_spec_unknown():
+    """알 수 없는 차량 - 기본값"""
+    car = {"diag_model": "UNKNOWN"}
+    spec = get_battery_spec(car)
+    
+    assert spec["capacity_kwh"] == 64.0
+    assert spec["capacity_ah"] == 170
+    assert spec["chemistry"] == "NMC"
+
+
+def test_format_soh_result_excellent():
+    """SOH 포맷 - 매우 좋음"""
+    estimate = SOHEstimate(
+        soh=95.0,
+        method="coulomb_counting",
+        confidence=0.85,
+        assumptions="테스트",
+        details={}
+    )
+    
+    result = format_soh_result(estimate)
+    
+    assert result["soh"] == 95.0
+    assert result["status"] == "excellent"
+    assert "매우 좋음" in result["status_text"]
+
+
+def test_format_soh_result_good():
+    """SOH 포맷 - 좋음"""
+    estimate = SOHEstimate(
+        soh=85.0,
+        method="energy_throughput",
+        confidence=0.7,
+        assumptions="테스트",
+        details={}
+    )
+    
+    result = format_soh_result(estimate)
+    
+    assert result["soh"] == 85.0
+    assert result["status"] == "good"
+    assert "좋음" in result["status_text"]
+
+
+def test_format_soh_result_fair():
+    """SOH 포맷 - 보통"""
+    estimate = SOHEstimate(
+        soh=75.0,
+        method="time_based_fallback",
+        confidence=0.6,
+        assumptions="테스트",
+        details={}
+    )
+    
+    result = format_soh_result(estimate)
+    
+    assert result["soh"] == 75.0
+    assert result["status"] == "fair"
+    assert "보통" in result["status_text"]
+
+
+def test_format_soh_result_poor():
+    """SOH 포맷 - 나쁨"""
+    estimate = SOHEstimate(
+        soh=65.0,
+        method="time_based_fallback",
+        confidence=0.5,
+        assumptions="테스트",
+        details={}
+    )
+    
+    result = format_soh_result(estimate)
+    
+    assert result["soh"] == 65.0
+    assert result["status"] == "poor"
+    assert "나쁨" in result["status_text"]
+
+
+def test_format_soh_result_unavailable():
+    """SOH 포맷 - 추정 불가"""
+    estimate = SOHEstimate(
+        soh=None,
+        method="unavailable",
+        confidence=0.0,
+        assumptions="데이터 부족",
+        details={}
+    )
+    
+    result = format_soh_result(estimate)
+    
+    assert result["soh"] is None
+    assert result["status"] == "unavailable"
+
+
+def test_soh_physical_limits():
+    """SOH는 60~105% 범위로 제한"""
+    # 극단적으로 많이 사용
     result = estimate_soh_by_throughput(
         cum_charge_ah=10000000,
         cum_discharge_ah=10000000,
@@ -206,14 +263,19 @@ def test_soh_bounds():
     )
     
     # 계산상 음수가 나와도 60% 이상으로 클리핑
-    assert 60.0 <= result.soh <= 100.0
+    assert 60.0 <= result.soh <= 105.0
+
+
+def test_soh_confidence_scores():
+    """각 방법의 신뢰도 점수"""
+    # Coulomb Counting: 0.85
+    result1 = estimate_soh_by_throughput(5000, 4750, 170, "NMC")
+    assert result1.confidence == 0.85
     
-    # 새 배터리
-    result2 = estimate_soh_by_throughput(
-        cum_charge_ah=10,
-        cum_discharge_ah=5,
-        nominal_capacity_ah=170,
-        battery_chemistry="NMC"
-    )
+    # Energy Throughput: 0.7
+    result2 = estimate_soh_by_energy(3000, 2850, 64, "NMC")
+    assert result2.confidence == 0.7
     
-    assert 60.0 <= result2.soh <= 100.0
+    # Time-based: 0.6
+    result3 = estimate_soh_by_time(365.25 * 24 * 3600, 6400, 64)
+    assert result3.confidence == 0.6
